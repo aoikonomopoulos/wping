@@ -1,0 +1,19 @@
+[package]
+name = "wping"
+version = "0.1.0"
+authors = ["Angelos Oikonomopoulos <a.oikonomopoulos@vu.nl>"]
+
+[dependencies.pnet]
+version = "0.16.0"
+
+[dependencies.pnet_macros_support]
+version = "0.1.1"
+
+[dependencies.libc]
+version = "0.2"
+
+[dependencies.argparse]
+version = "0.2"
+
+[dependencies.num]
+version = "0.1.36"
