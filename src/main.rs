@@ -3,6 +3,7 @@ extern crate pnet;
 extern crate pnet_macros_support;
 extern crate libc;
 extern crate num;
+extern crate resolve;
 use pnet::packet::ip::{IpNextHeaderProtocols};
 use pnet::transport::{ TransportSender, TransportReceiver,
                        transport_channel,ipv4_packet_iter};
@@ -25,6 +26,8 @@ use std::io::prelude::*;
 use std::collections::vec_deque::VecDeque;
 use num::pow::pow;
 use libc::getpid;
+use resolve::resolver::resolve_host;
+use std::error::Error;
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 
@@ -124,11 +127,7 @@ fn populate_packet(pkt_buf : &mut [u8], dst : &Ipv4Addr, icmp_payload : Vec<u8>)
     icmp_populate_packet(&mut ipv4, &icmp_payload);
 }
 
-fn send_ping (mut tx : TransportSender, dstaddr : String) -> Box<FnMut(u16) -> ()> {
-    let dst = match Ipv4Addr::from_str(&dstaddr) {
-        Ok (addr) => addr,
-        Err (e) => panic!("Couldn't parse address: {}: ", e)
-    };
+fn send_ping (mut tx : TransportSender, dst : Ipv4Addr) -> Box<FnMut(u16) -> ()> {
 
     let icmp_payload = vec![0x41; 60];
 
@@ -344,6 +343,20 @@ fn do_response(rtt_estimate : Option<Ewma> , stats : &mut Stats, resp : PingResp
     }
 }
 
+fn maybe_resolve(s: String) -> Result<Ipv4Addr, String> {
+    let dst = match Ipv4Addr::from_str(&s) {
+        Ok (addr) => Ok (addr),
+        Err (_) => {
+            let addrs = try!(resolve_host(&s).map_err(|e| String::from(e.description())));
+            addrs.filter_map(|a| match a {
+                IpAddr::V4 (v4) => Some (v4),
+                IpAddr::V6 (_) => None
+            }).next().ok_or(format!("No ipv4 addr for host '{}'", s))
+        }
+    };
+    dst
+}
+
 fn main() {
     let mut dest : Option<String> = None;
     let mut opt_interval : Option<String> = None;
@@ -368,7 +381,9 @@ fn main() {
         Ok ((tx, rx)) => (tx, rx),
         Err (e) => panic!("Could not create the transport channel: {}", e)
     };
-    let mut probe = send_ping(tx, dest.expect("Need to supply a destination host"));
+    let dst = maybe_resolve(dest.expect("Need to supply a destination host")).
+        expect("Could not determine target address");
+    let mut probe = send_ping(tx, dst);
     let mut seq = 0;
     let interval = match opt_interval {
         None => Duration::from_millis(1000),

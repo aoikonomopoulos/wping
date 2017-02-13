@@ -17,3 +17,6 @@ version = "0.2"
 
 [dependencies.num]
 version = "0.1.36"
+
+[dependencies.resolve]
+version = "0.1.2"
