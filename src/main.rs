@@ -37,10 +37,12 @@ mod ewma;
 
 use ewma::Ewma;
 
+type Seq = u16;
+
 struct PingResponse {
     nbytes : usize,
     addr : IpAddr,
-    seq : u16,
+    seq : Seq,
     ttl : u8,
     time : Instant,
 }
@@ -150,15 +152,17 @@ fn send_ping (mut tx : TransportSender, dst : Ipv4Addr) -> Box<FnMut(u16) -> ()>
     })
 }
 
+const INITIAL_SEQ_NR : u64 = 1;
+
 #[derive(Debug)]
 struct Probe {
-    seq : u16,
+    seq : Seq,
     sent : Instant,
     received : Option<Instant>,
 }
 
 impl Probe {
-    fn new(seq : u16, t : Instant) -> Self{
+    fn new(seq : Seq, t : Instant) -> Self{
         Probe {
             seq : seq,
             sent : t,
@@ -211,7 +215,7 @@ impl Stats {
             })
         }
     }
-    fn probe(&mut self, seq : u16, t : Instant) {
+    fn probe(&mut self, seq : Seq, t : Instant) {
         if self.ring.len() == (self.n as usize) {
             let p = self.ring.pop_front().expect("Error popping from non-empty window");
             // Probe slides out of the window, the received/lost
@@ -228,14 +232,14 @@ impl Stats {
                 },
                 None => {
                     // This is the first packet that slides out the window
-                    assert_eq!(p.seq, 1);
+                    assert_eq!(p.seq, INITIAL_SEQ_NR as Seq);
                     self.packet_loss = Some(Ewma::new(lost))
                 }
             }
         }
         self.ring.push_back(Probe::new(seq, t))
     }
-    fn response(&mut self, seq : u16, t : Instant) {
+    fn response(&mut self, seq : Seq, t : Instant) {
         match self.ring.iter_mut().find(|p| p.seq == seq) {
             None =>
             // XXX: here we want to be estimating the RTT time for that packet;
@@ -246,7 +250,7 @@ impl Stats {
             Some (probe) => probe.received(t)
         }
     }
-    fn probe_by_seq(&self, seq : u16) -> Option<&Probe> {
+    fn probe_by_seq(&self, seq : Seq) -> Option<&Probe> {
         self.ring.iter().find(|p| p.seq == seq)
     }
     fn estimate_packet_loss(&self, rtt : &Ewma) -> (f64, f64) {
@@ -311,12 +315,17 @@ fn duration_to_ns(d : Duration) -> u64 {
     d.as_secs() * 1000_000_000 + (d.subsec_nanos() as u64)
 }
 
+fn duration_from_ns(ns : u64) -> Duration {
+    let secs = ns / 1_000_000_000;
+    let nanos = (ns % 1_000_000_000) as u32;
+    Duration::new(secs, nanos)
+}
+
 fn do_probe(probe : &mut Box<FnMut(u16) -> ()>, stats: &mut Stats,
-            seq : &mut u16) -> Instant {
+            seq : Seq) -> Instant {
     let probe_time = Instant::now();
-    *seq += 1;
-    probe(*seq);
-    stats.probe(*seq, probe_time);
+    probe(seq);
+    stats.probe(seq, probe_time);
     probe_time
 }
 
@@ -384,10 +393,10 @@ fn main() {
     let dst = maybe_resolve(dest.expect("Need to supply a destination host")).
         expect("Could not determine target address");
     let mut probe = send_ping(tx, dst);
-    let mut seq = 0;
+    let mut seq = INITIAL_SEQ_NR;
     let interval = match opt_interval {
-        None => Duration::from_millis(1000),
-        Some (s) => Duration::from_millis((f64::from_str(&s).unwrap() * 1000.0) as u64)
+        None => 1000_000_000,
+        Some (s) => (f64::from_str(&s).unwrap() * 1000_000_000.0) as u64
     };
     let window_size = match opt_window_size {
         None => {
@@ -412,34 +421,40 @@ fn main() {
     let (sender, receiver) = mpsc::channel();
     let _ = thread::spawn(move || {
         process_responses(rx, sender)});
-    let mut last_probe_time = None;
+    let start_time = Instant::now();
 
     // See the format for the data line for the column widths and inter-column
     // whitespace.
     println!(" Seq      RTT     smooth RTT   RTT variation   Packet loss");
     loop {
-        let nowish = Instant::now();
-        match last_probe_time {
-            None => {
-                last_probe_time = Some(do_probe(&mut probe, &mut stats, &mut seq));
-            },
-            Some(t) if nowish.duration_since(t) > interval => {
-                last_probe_time = Some(do_probe(&mut probe, &mut stats, &mut seq));
-            },
-            Some (t) => {
-                let timeo = interval - nowish.duration_since(t);
-                match receiver.recv_timeout(timeo) {
-                    Ok (resp) => {
-                        rtt_estimate = do_response(rtt_estimate, &mut stats,
-                                                   resp)
-                    },
-                    Err (RecvTimeoutError::Timeout) => {
-                        // Time to probe again
-                    },
-                    Err (RecvTimeoutError::Disconnected) => {
-                        println!("Internal error: receiver thread exited");
-                        std::process::exit(1)
-                    }
+        let time_elapsed = Instant::now().duration_since(start_time);
+        // Once (seq_nr - 1) * send_interval nanoseconds have passed
+        // from our starting time, we need to send the next probe. We
+        // have to calculate the next send time based on our start time,
+        // otherwise we'd accumulate significant drift for long-lasting
+        // executions (the sleep interval is always >= than the interval
+        // we requested).
+        let ns_offset_of_next_send =
+            interval.checked_mul((seq - INITIAL_SEQ_NR) as u64).unwrap();
+
+        if duration_to_ns(time_elapsed) > ns_offset_of_next_send {
+            let _ = do_probe(&mut probe, &mut stats, seq as u16);
+            seq = seq.checked_add(1).unwrap();
+        } else {
+            // It's not time to send yet.
+            let diff = ns_offset_of_next_send - duration_to_ns(time_elapsed);
+            let timeo = duration_from_ns(diff);
+            match receiver.recv_timeout(timeo) {
+                Ok (resp) => {
+                    rtt_estimate = do_response(rtt_estimate, &mut stats,
+                                               resp)
+                },
+                Err (RecvTimeoutError::Timeout) => {
+                    // Time to probe again
+                },
+                Err (RecvTimeoutError::Disconnected) => {
+                    println!("Internal error: receiver thread exited");
+                    std::process::exit(1)
                 }
             }
         }
