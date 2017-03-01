@@ -36,6 +36,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use argparse::{ArgumentParser, StoreOption};
 
 mod ewma;
+mod columnar;
+use columnar::{Columnar, Column};
 
 use ewma::Ewma;
 
@@ -340,6 +342,14 @@ impl Ns {
     }
 }
 
+struct Percent(f64);
+
+impl fmt::Display for Percent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad(&format!("{:.0}%", self.0))
+    }
+}
+
 fn do_probe(probe : &mut Box<FnMut(u16) -> ()>, stats: &mut Stats,
             seq : Seq) -> Instant {
     let probe_time = Instant::now();
@@ -348,7 +358,8 @@ fn do_probe(probe : &mut Box<FnMut(u16) -> ()>, stats: &mut Stats,
     probe_time
 }
 
-fn do_response(rtt_estimate : Option<Ewma> , stats : &mut Stats, resp : PingResponse)
+fn do_response(columnar : &Columnar, rtt_estimate : Option<Ewma>,
+               stats : &mut Stats, resp : PingResponse)
                -> Option<Ewma> {
     stats.response(resp.seq, resp.time);
     match stats.probe_by_seq(resp.seq) {
@@ -360,12 +371,8 @@ fn do_response(rtt_estimate : Option<Ewma> , stats : &mut Stats, resp : PingResp
                 Some (mut rtt) => {rtt.add_sample(rtt_sample.0); rtt},
             };
             let packet_loss = stats.estimate_packet_loss(&nrtt);
-            println!("{seq:^5}  {rtt:^9}  {srtt:^10}   {rttvar:^13}   \
-                      {spl:^11}",
-                     seq=resp.seq, rtt=rtt_sample,
-                     srtt=Ns(nrtt.smoothed),
-                     rttvar=Ns(nrtt.variation),
-                     spl=format!("{:.0}%", packet_loss.0 * 100.0));
+            println!("{}", columnar.format(vec![&resp.seq, &rtt_sample, &Ns(nrtt.smoothed),
+                                     &Ns(nrtt.variation), &Percent(packet_loss.0 * 100.0)]));
             Some(nrtt)
         }
     }
@@ -385,7 +392,19 @@ fn maybe_resolve(s: String) -> Result<Ipv4Addr, String> {
     dst
 }
 
+fn columns () -> Vec<Column> {
+    vec![
+        Column::new("Seq", 5, 2),
+        Column::new("RTT", 9, 2),
+        Column::new("smooth RTT", 10, 3),
+        Column::new("RTT variation", 13, 3),
+        Column::new("Packet loss", 11, 3),
+    ]
+}
+
 fn main() {
+    let columnar = columns().into_iter().
+        fold(Columnar::new(), |columnar, col| columnar.push_col(col));
     let mut dest : Option<String> = None;
     let mut opt_interval : Option<String> = None;
     let mut opt_window_size : Option<String> = None;
@@ -442,9 +461,8 @@ fn main() {
         process_responses(rx, sender)});
     let start_time = Instant::now();
 
-    // See the format for the data line for the column widths and inter-column
-    // whitespace.
-    println!(" Seq      RTT     smooth RTT   RTT variation   Packet loss");
+    println!("{}", columnar.header());
+
     loop {
         let time_elapsed = Instant::now().duration_since(start_time);
         // Once (seq_nr - 1) * send_interval nanoseconds have passed
@@ -465,7 +483,7 @@ fn main() {
             let timeo = diff.to_duration();
             match receiver.recv_timeout(timeo) {
                 Ok (resp) => {
-                    rtt_estimate = do_response(rtt_estimate, &mut stats,
+                    rtt_estimate = do_response(&columnar, rtt_estimate, &mut stats,
                                                resp)
                 },
                 Err (RecvTimeoutError::Timeout) => {
