@@ -28,6 +28,8 @@ use num::pow::pow;
 use libc::getpid;
 use resolve::resolver::resolve_host;
 use std::error::Error;
+use std::fmt;
+use std::ops::Sub;
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 
@@ -261,8 +263,8 @@ impl Stats {
                 Some (_) =>
                     Some(0),
                 None => {
-                    let elapsed = duration_to_ns(now.duration_since(p.sent));
-                    if elapsed > rtt.smoothed + 2 * rtt.variation {
+                    let elapsed = Ns::from_duration(now.duration_since(p.sent));
+                    if elapsed.0 > rtt.smoothed + 2 * rtt.variation {
                         // We consider this lost for the current calculation. If
                         // it does arrive later, we'll revise the packet loss percentage
                         // downwards.
@@ -288,37 +290,54 @@ impl Stats {
     }
 }
 
-fn nanos_to_str(ns : u64) -> String {
-    for (i, unit) in ["s", "ms", "us"].into_iter().enumerate() {
-        let exp = 9 - i * 3;
-        let conv = pow::<u64>(10, exp);
-        let res = ns / conv;
-        if res != 0 {
-            return format!("{} {}", res, unit)
+#[derive(PartialEq, PartialOrd, Eq, Ord)]
+struct Ns(u64);
+
+impl fmt::Display for Ns {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let ns = self.0;
+        for (i, unit) in ["s", "ms", "us"].into_iter().enumerate() {
+            let exp = 9 - i * 3;
+            let conv = pow::<u64>(10, exp);
+            let res = ns / conv;
+            if res != 0 {
+                return f.pad(&format!("{} {}", res, unit))
+            }
         }
+        return f.pad(&format!("{} ns", ns))
     }
-    return format!("{} ns", ns)
+}
+
+
+impl Sub for Ns {
+    type Output = Ns;
+    fn sub(self, other: Ns) -> Ns{
+        Ns(self.0 - other.0)
+    }
 }
 
 #[test]
-fn test_nanos_to_str() {
-    assert_eq!(nanos_to_str(0), "0 ns");
-    assert_eq!(nanos_to_str(10), "10 ns");
-    assert_eq!(nanos_to_str(1000), "1 us");
-    assert_eq!(nanos_to_str(10_000), "10 us");
-    assert_eq!(nanos_to_str(10_000_000), "10 ms");
-    assert_eq!(nanos_to_str(10_000_000_000), "10 s");
-    assert_eq!(nanos_to_str(10_000_000_000_000), "10000 s");
+fn test_nanoseconds_display() {
+    assert_eq!(format!("{}", Ns(0)), "0 ns");
+    assert_eq!(format!("{}", Ns(10)), "10 ns");
+    assert_eq!(format!("{}", Ns(1000)), "1 us");
+    assert_eq!(format!("{}", Ns(10_000)), "10 us");
+    assert_eq!(format!("{}", Ns(10_000_000)), "10 ms");
+    assert_eq!(format!("{}", Ns(10_000_000_000)), "10 s");
+    assert_eq!(format!("{}", Ns(10_000_000_000_000)), "10000 s");
 }
 
-fn duration_to_ns(d : Duration) -> u64 {
-    d.as_secs() * 1000_000_000 + (d.subsec_nanos() as u64)
-}
+impl Ns {
+    fn from_duration(d : Duration) -> Self {
+        Ns(d.as_secs() * 1000_000_000 + (d.subsec_nanos() as u64))
+    }
 
-fn duration_from_ns(ns : u64) -> Duration {
-    let secs = ns / 1_000_000_000;
-    let nanos = (ns % 1_000_000_000) as u32;
-    Duration::new(secs, nanos)
+    fn to_duration(&self) -> Duration {
+        let ns = self.0;
+        let secs = ns / 1_000_000_000;
+        let nanos = (ns % 1_000_000_000) as u32;
+        Duration::new(secs, nanos)
+    }
 }
 
 fn do_probe(probe : &mut Box<FnMut(u16) -> ()>, stats: &mut Stats,
@@ -335,17 +354,17 @@ fn do_response(rtt_estimate : Option<Ewma> , stats : &mut Stats, resp : PingResp
     match stats.probe_by_seq(resp.seq) {
         None => rtt_estimate, // XXX: outside window
         Some (p) => {
-            let rtt_sample = duration_to_ns(p.rtt().unwrap());
+            let rtt_sample = Ns::from_duration(p.rtt().unwrap());
             let nrtt = match rtt_estimate {
-                None => Ewma::new(rtt_sample),
-                Some (mut rtt) => {rtt.add_sample(rtt_sample); rtt},
+                None => Ewma::new(rtt_sample.0),
+                Some (mut rtt) => {rtt.add_sample(rtt_sample.0); rtt},
             };
             let packet_loss = stats.estimate_packet_loss(&nrtt);
             println!("{seq:^5}  {rtt:^9}  {srtt:^10}   {rttvar:^13}   \
                       {spl:^11}",
-                     seq=resp.seq, rtt=nanos_to_str(rtt_sample),
-                     srtt=nanos_to_str(nrtt.smoothed),
-                     rttvar=nanos_to_str(nrtt.variation),
+                     seq=resp.seq, rtt=rtt_sample,
+                     srtt=Ns(nrtt.smoothed),
+                     rttvar=Ns(nrtt.variation),
                      spl=format!("{:.0}%", packet_loss.0 * 100.0));
             Some(nrtt)
         }
@@ -435,15 +454,15 @@ fn main() {
         // executions (the sleep interval is always >= than the interval
         // we requested).
         let ns_offset_of_next_send =
-            interval.checked_mul((seq - INITIAL_SEQ_NR) as u64).unwrap();
+            Ns(interval.checked_mul((seq - INITIAL_SEQ_NR) as u64).unwrap());
 
-        if duration_to_ns(time_elapsed) > ns_offset_of_next_send {
+        if Ns::from_duration(time_elapsed) > ns_offset_of_next_send {
             let _ = do_probe(&mut probe, &mut stats, seq as u16);
             seq = seq.checked_add(1).unwrap();
         } else {
             // It's not time to send yet.
-            let diff = ns_offset_of_next_send - duration_to_ns(time_elapsed);
-            let timeo = duration_from_ns(diff);
+            let diff = ns_offset_of_next_send - Ns::from_duration(time_elapsed);
+            let timeo = diff.to_duration();
             match receiver.recv_timeout(timeo) {
                 Ok (resp) => {
                     rtt_estimate = do_response(rtt_estimate, &mut stats,
