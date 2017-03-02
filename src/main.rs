@@ -33,7 +33,7 @@ use std::ops::Sub;
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 
-use argparse::{ArgumentParser, StoreOption};
+use argparse::{ArgumentParser, StoreOption, StoreTrue};
 
 mod ewma;
 mod columnar;
@@ -350,6 +350,19 @@ impl fmt::Display for Percent {
     }
 }
 
+struct IpAddrPaddable (IpAddr);
+
+// IpAddr's Display implementation doesn't respect the padding flags, we
+// need to wrap it for Columnar to Just Work with it.
+impl fmt::Display for IpAddrPaddable {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            IpAddr::V4 (v4) => f.pad(&format!("{}", v4)),
+            IpAddr::V6 (v6) => f.pad(&format!("{}", v6)),
+        }
+    }
+}
+
 fn do_probe(probe : &mut Box<FnMut(u16) -> ()>, stats: &mut Stats,
             seq : Seq) -> Instant {
     let probe_time = Instant::now();
@@ -358,22 +371,23 @@ fn do_probe(probe : &mut Box<FnMut(u16) -> ()>, stats: &mut Stats,
     probe_time
 }
 
-fn do_response(columnar : &Columnar, rtt_estimate : Option<Ewma>,
-               stats : &mut Stats, resp : PingResponse)
-               -> Option<Ewma> {
+// Update our statistics and return the RTT of the response
+fn do_response(rtt_estimate : &mut Option<Ewma>,
+               stats : &mut Stats, resp : &PingResponse)
+               -> Option<Ns> {
     stats.response(resp.seq, resp.time);
     match stats.probe_by_seq(resp.seq) {
-        None => rtt_estimate, // XXX: outside window
+        None => None, // XXX: outside window
         Some (p) => {
             let rtt_sample = Ns::from_duration(p.rtt().unwrap());
-            let nrtt = match rtt_estimate {
-                None => Ewma::new(rtt_sample.0),
-                Some (mut rtt) => {rtt.add_sample(rtt_sample.0); rtt},
+            match *rtt_estimate {
+                None =>
+                    *rtt_estimate = Some (Ewma::new(rtt_sample.0)),
+                Some (ref mut rtt) => {
+                    rtt.add_sample(rtt_sample.0)
+                },
             };
-            let packet_loss = stats.estimate_packet_loss(&nrtt);
-            println!("{}", columnar.format(vec![&resp.seq, &rtt_sample, &Ns(nrtt.smoothed),
-                                     &Ns(nrtt.variation), &Percent(packet_loss.0 * 100.0)]));
-            Some(nrtt)
+            Some (rtt_sample)
         }
     }
 }
@@ -392,7 +406,7 @@ fn maybe_resolve(s: String) -> Result<Ipv4Addr, String> {
     dst
 }
 
-fn columns () -> Vec<Column> {
+fn columns_simple () -> Vec<Column> {
     vec![
         Column::new("Seq", 5, 2),
         Column::new("RTT", 9, 2),
@@ -402,12 +416,54 @@ fn columns () -> Vec<Column> {
     ]
 }
 
+
+fn columns_extended () -> Vec<Column> {
+    vec![
+        Column::new("Seq", 5, 2),
+        Column::new("Bytes", 5, 2),
+        Column::new("TTL", 5, 2),
+        Column::new("From", 15, 2),
+        Column::new("RTT", 9, 2),
+        Column::new("smooth RTT", 10, 3),
+        Column::new("RTT variation", 13, 3),
+        Column::new("Packet loss", 11, 3),
+    ]
+}
+
+fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar, stats : &Stats,
+                                resp : &'a PingResponse, rtt_sample : Ns, rtt : &Ewma) {
+    let packet_loss = stats.estimate_packet_loss(&rtt);
+    let addr = IpAddrPaddable(resp.addr);
+    let rtt_smoothed = Ns(rtt.smoothed);
+    let rtt_variation = Ns(rtt.variation);
+    let packet_loss = Percent(packet_loss.0 * 100.0);
+    let values : Vec<&fmt::Display>= match opt_extended_format {
+        true => vec![
+            &resp.seq,
+            &resp.nbytes,
+            &resp.ttl,
+            &addr,
+            &rtt_sample,
+            &rtt_smoothed,
+            &rtt_variation,
+            &packet_loss,
+        ],
+        false => vec![
+            &resp.seq,
+            &rtt_sample,
+            &rtt_smoothed,
+            &rtt_variation,
+            &packet_loss,
+        ],
+    };
+    println!("{}", columnar.format(values));
+}
+
 fn main() {
-    let columnar = columns().into_iter().
-        fold(Columnar::new(), |columnar, col| columnar.push_col(col));
     let mut dest : Option<String> = None;
     let mut opt_interval : Option<String> = None;
     let mut opt_window_size : Option<String> = None;
+    let mut opt_extended_format : bool = false;
     {
         let mut parser = ArgumentParser::new();
         parser.refer(&mut dest).add_argument("address", StoreOption, "Target ipv4 address");
@@ -415,6 +471,9 @@ fn main() {
         parser.refer(&mut opt_window_size).
             add_option(&["--window"],StoreOption,
                        "Adaptive packet loss calculation for the last N probes");
+        parser.refer(&mut opt_extended_format).
+            add_option(&["-x", "--extended"], StoreTrue,
+                       "Include additional information in the output");
         match parser.parse_args() {
             Ok (()) => (),
             Err (e) => {
@@ -423,6 +482,13 @@ fn main() {
             }
         }
     }
+    let columns = match opt_extended_format {
+        false => columns_simple (),
+        true => columns_extended (),
+    };
+    let columnar = columns.into_iter().
+        fold(Columnar::new(), |columnar, col| columnar.push_col(col));
+
     let protocol = Layer3(IpNextHeaderProtocols::Icmp);
     let (tx, rx) = match transport_channel(4096, protocol) {
         Ok ((tx, rx)) => (tx, rx),
@@ -483,8 +549,15 @@ fn main() {
             let timeo = diff.to_duration();
             match receiver.recv_timeout(timeo) {
                 Ok (resp) => {
-                    rtt_estimate = do_response(&columnar, rtt_estimate, &mut stats,
-                                               resp)
+                    match do_response(&mut rtt_estimate, &mut stats, &resp) {
+                        Some (sample) => match rtt_estimate {
+                            Some (ref rtt_estimate) =>
+                                output_row(opt_extended_format, &columnar, &stats,
+                                           &resp, sample, rtt_estimate),
+                            None => unreachable!(),
+                        },
+                        None => (),
+                    }
                 },
                 Err (RecvTimeoutError::Timeout) => {
                     // Time to probe again
