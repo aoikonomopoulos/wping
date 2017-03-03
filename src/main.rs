@@ -13,7 +13,7 @@ use pnet::packet::ipv4::{MutableIpv4Packet, Ipv4Flags};
 use pnet::packet::icmp::{IcmpPacket, IcmpCode, IcmpTypes};
 use pnet::packet::icmp::echo_request::{MutableEchoRequestPacket};
 use pnet::packet::icmp::echo_reply::{EchoReplyPacket};
-use pnet::packet::{icmp, PacketSize};
+use pnet::packet::icmp;
 
 // checksum
 use pnet_macros_support::types::u16be;
@@ -69,7 +69,7 @@ fn process_responses(mut rx : TransportReceiver,
                         {
                             // XXX: check addr
                             let resp = PingResponse {
-                                nbytes : ipv4.packet_size(),
+                                nbytes : ipv4.payload().len(),
                                 addr : addr,
                                 seq : echoreply.get_sequence_number(),
                                 ttl : ipv4.get_ttl(),
