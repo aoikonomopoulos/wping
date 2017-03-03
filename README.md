@@ -24,37 +24,50 @@ are far enough in the past), the packet loss is reported as 0%.
 
 The EWMA calculation is performed according to RFC6298.
 
+Updated statistics are printed once per send interval: when a response
+is received or, failing that, when the next probe is about to be sent.
+
 ## Usage
 On a loopback interface with emulated packet loss:
 
 ```
 $ sudo wping 127.0.0.1
- Seq      RTT     smooth RTT   RTT variation   Packet loss
-  1     138 us      138 us         69 us           0%     
-  2     152 us      139 us         55 us           0%     
-  3     132 us      139 us         43 us           0%     
-  4     133 us      138 us         34 us           0%     
-  5     115 us      135 us         31 us           0%     
-  6     325 us      159 us         70 us           0%     
-  7     126 us      155 us         61 us           0%     
-  9     251 us      167 us         70 us           11%    
- 12     134 us      163 us         61 us           28%    
- 13     338 us      184 us         89 us           24%    
- 14     246 us      192 us         82 us           21%    
- 15     385 us      216 us        110 us           19%    
- 16     215 us      216 us         82 us           16%    
- 17     362 us      234 us         98 us           14%    
- 18     211 us      231 us         79 us           12%    
- 19     214 us      229 us         64 us           11%    
- 20      92 us      212 us         82 us           10%    
- 21     173 us      207 us         71 us           8%
+ Seq      RTT      smooth RTT   RTT variation   Packet loss
+  1     315 us       315 us        157 us           0%
+  -        -         315 us        157 us           12%
+  3     335 us       318 us        123 us           11%
+  4     346 us       321 us         99 us           10%
+  5     339 us       323 us         79 us           8%
+  6     131 us       299 us        107 us           7%
+  7     128 us       278 us        123 us           6%
+  8     322 us       283 us        103 us           6%
+  -        -         283 us        103 us           17%
+ 10     134 us       265 us        115 us           15%
+ 11     332 us       273 us        103 us           13%
+  -        -         273 us        103 us           24%
+ 13     138 us       256 us        111 us           21%
+ 14     315 us       264 us         98 us           18%
+  -        -         264 us         98 us           29%
+ 16     139 us       248 us        104 us           25%
+ 17     324 us       258 us         97 us           22%
+ 18     126 us       241 us        106 us           19%
+ 19     124 us       226 us        108 us           17%
+ 20     309 us       237 us        102 us           15%
+ 21     318 us       247 us         96 us           13%
 ```
 
-The default send interval is 1s and the adaptive packet loss window includes 20 probes (the effects of a packet loss event drop to below 1% after that).
+The default send interval is 1s and the adaptive packet loss window
+includes 20 probes (the effects of a packet loss event drop to below
+1% after that). On Linux, you can avoid the need for sudo by setting
+the appropriate capability on the executable:
+
+```
+# setcap cap_net_raw+ep /path/to/wping
+```
 
 ```
 Usage:
-    target/debug/wping [OPTIONS] [ADDRESS]
+    wping [OPTIONS] [ADDRESS]
 
 
 positional arguments:
@@ -64,4 +77,5 @@ optional arguments:
   -h,--help             show this help message and exit
   -i                    Send interval
   --window WINDOW       Adaptive packet loss calculation for the last N probes
+  -x,--extended         Include additional information in the output
 ```
