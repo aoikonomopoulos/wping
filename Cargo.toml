@@ -1,7 +1,12 @@
 [package]
 name = "wping"
 version = "0.1.0"
+description = "A ping command that tries to provide more useful output"
 authors = ["Angelos Oikonomopoulos <a.oikonomopoulos@vu.nl>"]
+license = "GPL-3.0"
+keywords = ["ping", "network"]
+readme = "README.md"
+repository = "https://github.com/aoikonomopoulos/wping"
 
 [dependencies.pnet]
 version = "0.16.0"
