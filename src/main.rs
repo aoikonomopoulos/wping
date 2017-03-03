@@ -254,6 +254,9 @@ impl Stats {
             Some (probe) => probe.received(t)
         }
     }
+    fn last_probe_pending(&self) -> bool {
+        self.ring.iter().last().iter().any(|p| p.received.is_none())
+    }
     fn probe_by_seq(&self, seq : Seq) -> Option<&Probe> {
         self.ring.iter().find(|p| p.seq == seq)
     }
@@ -430,33 +433,61 @@ fn columns_extended () -> Vec<Column> {
     ]
 }
 
-fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar, stats : &Stats,
-                                resp : &'a PingResponse, rtt_sample : Ns, rtt : &Ewma) {
-    let packet_loss = stats.estimate_packet_loss(&rtt);
-    let addr = IpAddrPaddable(resp.addr);
+fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
+                   stats : &Stats, resp : Option<&'a PingResponse>,
+                   rtt_sample : Option<&fmt::Display>, // XXX: Ugh why can't it work with the vec!
+                   rtt : &Ewma) {
+    let seq : Option<&fmt::Display> = match resp {
+        Some (r) => Some (&r.seq),
+        None => None,
+    };
+    let nbytes : Option<&fmt::Display> = match resp {
+        Some (r) => Some (&r.nbytes),
+        None => None,
+    };
+    let ttl : Option<&fmt::Display> = match resp {
+        Some (r) => Some (&r.ttl),
+        None => None,
+    };
+    let addr = resp.map(|r| (IpAddrPaddable(r.addr)));
+    let addr : Option<&fmt::Display> = match addr {
+        Some (ref a) => Some (a),
+        None => None,
+    };
     let rtt_smoothed = Ns(rtt.smoothed);
     let rtt_variation = Ns(rtt.variation);
+    let packet_loss = stats.estimate_packet_loss(&rtt);
     let packet_loss = Percent(packet_loss.0 * 100.0);
-    let values : Vec<&fmt::Display>= match opt_extended_format {
-        true => vec![
-            &resp.seq,
-            &resp.nbytes,
-            &resp.ttl,
-            &addr,
-            &rtt_sample,
-            &rtt_smoothed,
-            &rtt_variation,
-            &packet_loss,
-        ],
+    let values : Vec<Option<&fmt::Display>> = match opt_extended_format {
+        true => {
+            let v : Vec<Option<&fmt::Display>> = vec![
+                seq,
+                nbytes,
+                ttl,
+                addr,
+                rtt_sample,
+                Some (&rtt_smoothed),
+                Some (&rtt_variation),
+                Some (&packet_loss),
+            ];
+            v
+        },
         false => vec![
-            &resp.seq,
-            &rtt_sample,
-            &rtt_smoothed,
-            &rtt_variation,
-            &packet_loss,
+            seq,
+            rtt_sample,
+            Some (&rtt_smoothed),
+            Some (&rtt_variation),
+            Some (&packet_loss),
         ],
     };
     println!("{}", columnar.format(values));
+}
+
+fn passive_update(opt_extended_format : bool, rtt : &Option<Ewma>,
+                  columnar : &Columnar, stats : &Stats) {
+    if let Some (ref estimate) = *rtt {
+        output_row(opt_extended_format, columnar, stats, None, None, estimate)
+    }
 }
 
 fn main() {
@@ -541,6 +572,10 @@ fn main() {
             Ns(interval.checked_mul((seq - INITIAL_SEQ_NR) as u64).unwrap());
 
         if Ns::from_duration(time_elapsed) > ns_offset_of_next_send {
+            if stats.last_probe_pending() {
+                // Don't go too long without printing statistics
+                passive_update(opt_extended_format, &rtt_estimate, &columnar, &stats)
+            }
             let _ = do_probe(&mut probe, &mut stats, seq as u16);
             seq = seq.checked_add(1).unwrap();
         } else {
@@ -549,14 +584,13 @@ fn main() {
             let timeo = diff.to_duration();
             match receiver.recv_timeout(timeo) {
                 Ok (resp) => {
-                    match do_response(&mut rtt_estimate, &mut stats, &resp) {
-                        Some (sample) => match rtt_estimate {
+                    for sample in do_response(&mut rtt_estimate, &mut stats, &resp) {
+                        match rtt_estimate {
                             Some (ref rtt_estimate) =>
                                 output_row(opt_extended_format, &columnar, &stats,
-                                           &resp, sample, rtt_estimate),
+                                           Some (&resp), Some (&sample), rtt_estimate),
                             None => unreachable!(),
-                        },
-                        None => (),
+                        }
                     }
                 },
                 Err (RecvTimeoutError::Timeout) => {

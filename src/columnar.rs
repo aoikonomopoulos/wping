@@ -64,12 +64,14 @@ impl<'a> Columnar {
                      (acc, Some (col))
             }).0
     }
-    pub fn format(&'a self, values : Vec<&Display>) -> String {
+    pub fn format(&'a self, values : Vec<Option<&Display>>) -> String {
+        let na = "-".to_string();
         self.columns.iter().zip(values).
             fold((String::new(), None),
                  |(mut acc, prev_col) : (String, Option<&'a Column>),
-                 (col, v) : (&'a Column, &Display)| {
+                 (col, v) : (&'a Column, Option<&Display>)| {
                      acc.push_str(&breathing_whitespace(prev_col, &col));
+                     let v = v.unwrap_or(&na);
                      acc.push_str(&format!("{0:^1$}", v, col.fmt_max_width));
                      (acc, Some (col))
                  }).0
