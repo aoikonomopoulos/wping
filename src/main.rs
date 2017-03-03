@@ -436,7 +436,7 @@ fn columns_extended () -> Vec<Column> {
 fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
                    stats : &Stats, resp : Option<&'a PingResponse>,
                    rtt_sample : Option<&fmt::Display>, // XXX: Ugh why can't it work with the vec!
-                   rtt : &Ewma) {
+                   rtt : Option<&Ewma>) {
     let seq : Option<&fmt::Display> = match resp {
         Some (r) => Some (&r.seq),
         None => None,
@@ -454,10 +454,13 @@ fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
         Some (ref a) => Some (a),
         None => None,
     };
-    let rtt_smoothed = Ns(rtt.smoothed);
-    let rtt_variation = Ns(rtt.variation);
-    let packet_loss = stats.estimate_packet_loss(&rtt);
-    let packet_loss = Percent(packet_loss.0 * 100.0);
+    let rtt_smoothed = rtt.map(|rtt| Ns(rtt.smoothed));
+    let rtt_variation = rtt.map(|rtt| Ns(rtt.variation));
+    // Calculate the packet loss based on the RTT estimate. If we
+    // don't have an RTT estimate, that means we haven't received a
+    // a single response yet, so our packet loss has to be 100%
+    let packet_loss = rtt.map(|rtt| stats.estimate_packet_loss(&rtt)).map( |pl| {
+        Percent(pl.0 * 100.0)}).unwrap_or(Percent(100.0));
     let values : Vec<Option<&fmt::Display>> = match opt_extended_format {
         true => {
             let v : Vec<Option<&fmt::Display>> = vec![
@@ -466,8 +469,8 @@ fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
                 ttl,
                 addr,
                 rtt_sample,
-                Some (&rtt_smoothed),
-                Some (&rtt_variation),
+                rtt_smoothed.as_ref().map(|ns| ns as &fmt::Display),
+                rtt_variation.as_ref().map(|ns| ns as &fmt::Display),
                 Some (&packet_loss),
             ];
             v
@@ -475,8 +478,8 @@ fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
         false => vec![
             seq,
             rtt_sample,
-            Some (&rtt_smoothed),
-            Some (&rtt_variation),
+            rtt_smoothed.as_ref().map(|ns| ns as &fmt::Display),
+            rtt_variation.as_ref().map(|ns| ns as &fmt::Display),
             Some (&packet_loss),
         ],
     };
@@ -485,9 +488,7 @@ fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
 
 fn passive_update(opt_extended_format : bool, rtt : &Option<Ewma>,
                   columnar : &Columnar, stats : &Stats) {
-    if let Some (ref estimate) = *rtt {
-        output_row(opt_extended_format, columnar, stats, None, None, estimate)
-    }
+    output_row(opt_extended_format, columnar, stats, None, None, rtt.as_ref())
 }
 
 fn main() {
@@ -585,12 +586,8 @@ fn main() {
             match receiver.recv_timeout(timeo) {
                 Ok (resp) => {
                     for sample in do_response(&mut rtt_estimate, &mut stats, &resp) {
-                        match rtt_estimate {
-                            Some (ref rtt_estimate) =>
-                                output_row(opt_extended_format, &columnar, &stats,
-                                           Some (&resp), Some (&sample), rtt_estimate),
-                            None => unreachable!(),
-                        }
+                        output_row(opt_extended_format, &columnar, &stats,
+                                   Some (&resp), Some (&sample), rtt_estimate.as_ref())
                     }
                 },
                 Err (RecvTimeoutError::Timeout) => {
