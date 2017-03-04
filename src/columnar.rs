@@ -59,7 +59,7 @@ impl<'a> Columnar {
         (&self.columns).into_iter().
             fold(("".to_string(), None),
                  |(mut acc, prev_col) : (String, Option<&'a Column>), col : &'a Column| {
-                     acc.push_str(&breathing_whitespace(prev_col, &col));
+                     acc.push_str(&breathing_whitespace(prev_col, col));
                      acc.push_str(&format!("{0:^1$}", col.name, col.fmt_max_width));
                      (acc, Some (col))
             }).0
@@ -70,7 +70,7 @@ impl<'a> Columnar {
             fold((String::new(), None),
                  |(mut acc, prev_col) : (String, Option<&'a Column>),
                  (col, v) : (&'a Column, Option<&Display>)| {
-                     acc.push_str(&breathing_whitespace(prev_col, &col));
+                     acc.push_str(&breathing_whitespace(prev_col, col));
                      let v = v.unwrap_or(&na);
                      acc.push_str(&format!("{0:^1$}", v, col.fmt_max_width));
                      (acc, Some (col))

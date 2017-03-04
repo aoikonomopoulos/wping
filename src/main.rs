@@ -1,3 +1,6 @@
+#![allow(unknown_lints)]
+#![allow(match_bool)]
+
 extern crate argparse;
 extern crate pnet;
 extern crate pnet_macros_support;
@@ -52,7 +55,7 @@ struct PingResponse {
 }
 
 fn process_responses(mut rx : TransportReceiver,
-                sender : mpsc::Sender<PingResponse>) -> ! {
+                sender : &mpsc::Sender<PingResponse>) -> ! {
     let mut iter = ipv4_packet_iter(&mut rx);
     loop {
         let res = iter.next();
@@ -62,39 +65,36 @@ fn process_responses(mut rx : TransportReceiver,
                 println!("Error receiving packet: {}", e);
             },
             Ok ((ipv4, addr)) => {
-                match EchoReplyPacket::new(ipv4.payload()) {
-                    Some (echoreply) => {
-                        if echoreply.get_icmp_type() == IcmpTypes::EchoReply &&
-                            echoreply.get_identifier() == unsafe{getpid() as u16}
-                        {
-                            // XXX: check addr
-                            let resp = PingResponse {
-                                nbytes : ipv4.payload().len(),
-                                addr : addr,
-                                seq : echoreply.get_sequence_number(),
-                                ttl : ipv4.get_ttl(),
-                                time : t,
-                            };
-                            if sender.send(resp).is_err() {
-                                println!("Internal error: cannot send message to thread")
-                            }
+                if let Some (echoreply) = EchoReplyPacket::new(ipv4.payload()) {
+                    if echoreply.get_icmp_type() == IcmpTypes::EchoReply &&
+                        echoreply.get_identifier() == unsafe{getpid() as u16}
+                    {
+                        // XXX: check addr
+                        let resp = PingResponse {
+                            nbytes : ipv4.payload().len(),
+                            addr : addr,
+                            seq : echoreply.get_sequence_number(),
+                            ttl : ipv4.get_ttl(),
+                            time : t,
+                        };
+                        if sender.send(resp).is_err() {
+                            println!("Internal error: cannot send message to thread")
                         }
-                    },
-                    None => ()
+                    }
                 }
             }
         }
     }
 }
 
-fn icmp_populate_packet(ipv4 : &mut MutableIpv4Packet, icmp_payload : &Vec<u8>) {
+fn icmp_populate_packet(ipv4 : &mut MutableIpv4Packet, icmp_payload : &[u8]) {
     let mut echo_req = MutableEchoRequestPacket::new(ipv4.payload_mut()).unwrap();
     echo_req.set_icmp_type(IcmpTypes::EchoRequest);
     echo_req.set_icmp_code(IcmpCode::new(0));
     let pid = unsafe {getpid()};
     echo_req.set_identifier(pid as u16);
     echo_req.set_sequence_number(88);
-    echo_req.set_payload(&icmp_payload);
+    echo_req.set_payload(icmp_payload);
 }
 
 fn icmp_calc_checksum(ipv4 : &MutableIpv4Packet) -> u16be {
@@ -103,7 +103,7 @@ fn icmp_calc_checksum(ipv4 : &MutableIpv4Packet) -> u16be {
 }
 
 fn icmp_checksum(ipv4 : &mut MutableIpv4Packet) {
-    let csum = icmp_calc_checksum(&ipv4);
+    let csum = icmp_calc_checksum(ipv4);
     let mut ipv4_payload = ipv4.payload_mut();
     let mut echo_req = MutableEchoRequestPacket::new(ipv4_payload).unwrap();
     echo_req.set_checksum(csum);
@@ -114,7 +114,7 @@ fn icmp_update_seq(ipv4 : &mut MutableIpv4Packet, seq : u16) {
     echo_req.set_sequence_number(seq)
 }
 
-fn populate_packet(pkt_buf : &mut [u8], dst : &Ipv4Addr, icmp_payload : Vec<u8>) {
+fn populate_packet(pkt_buf : &mut [u8], dst : &Ipv4Addr, icmp_payload : &[u8]) {
     let mut ipv4 = MutableIpv4Packet::new(pkt_buf).unwrap();
 
     ipv4.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
@@ -130,7 +130,7 @@ fn populate_packet(pkt_buf : &mut [u8], dst : &Ipv4Addr, icmp_payload : Vec<u8>)
     ipv4.set_destination(*dst);
     ipv4.set_flags(Ipv4Flags::DontFragment);
     ipv4.set_options(&[]);
-    icmp_populate_packet(&mut ipv4, &icmp_payload);
+    icmp_populate_packet(&mut ipv4, icmp_payload);
 }
 
 fn send_ping (mut tx : TransportSender, dst : Ipv4Addr) -> Box<FnMut(u16) -> ()> {
@@ -143,7 +143,7 @@ fn send_ping (mut tx : TransportSender, dst : Ipv4Addr) -> Box<FnMut(u16) -> ()>
 
     let mut pkt_buf : Vec<u8> = vec!(0; total_len);
 
-    populate_packet(&mut pkt_buf, &dst, icmp_payload);
+    populate_packet(&mut pkt_buf, &dst, &icmp_payload);
     Box::new(move |seq| {
         let mut ipv4 = MutableIpv4Packet::new(&mut pkt_buf).unwrap();
         icmp_update_seq(&mut ipv4, seq);
@@ -309,7 +309,7 @@ impl fmt::Display for Ns {
                 return f.pad(&format!("{} {}", res, unit))
             }
         }
-        return f.pad(&format!("{} ns", ns))
+        f.pad(&format!("{} ns", ns))
     }
 }
 
@@ -395,18 +395,17 @@ fn do_response(rtt_estimate : &mut Option<Ewma>,
     }
 }
 
-fn maybe_resolve(s: String) -> Result<Ipv4Addr, String> {
-    let dst = match Ipv4Addr::from_str(&s) {
+fn maybe_resolve(s : &str) -> Result<Ipv4Addr, String> {
+    match Ipv4Addr::from_str(s) {
         Ok (addr) => Ok (addr),
         Err (_) => {
             let addrs = try!(resolve_host(&s).map_err(|e| String::from(e.description())));
             addrs.filter_map(|a| match a {
                 IpAddr::V4 (v4) => Some (v4),
                 IpAddr::V6 (_) => None
-            }).next().ok_or(format!("No ipv4 addr for host '{}'", s))
+            }).next().ok_or_else(|| format!("No ipv4 addr for host '{}'", s))
         }
-    };
-    dst
+    }
 }
 
 fn columns_simple () -> Vec<Column> {
@@ -433,13 +432,13 @@ fn columns_extended () -> Vec<Column> {
     ]
 }
 
-fn to_display<'a, T : fmt::Display>(v : Option<&'a T>) -> Option<&fmt::Display> {
+fn to_display<T : fmt::Display>(v : Option<&T>) -> Option<&fmt::Display> {
     v.map (|v| v as &fmt::Display)
 }
 
 fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
                    stats : &Stats, resp : Option<&'a PingResponse>,
-                   rtt_sample : Option<Ns>,
+                   rtt_sample : &Option<Ns>,
                    rtt : Option<&Ewma>) {
     let seq = resp.map(|r| &r.seq as &fmt::Display);
     let nbytes = resp.map (|r| &r.nbytes as &fmt::Display);
@@ -450,7 +449,7 @@ fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
     // Calculate the packet loss based on the RTT estimate. If we
     // don't have an RTT estimate, that means we haven't received a
     // a single response yet, so our packet loss has to be 100%
-    let packet_loss = rtt.map(|rtt| stats.estimate_packet_loss(&rtt)).map( |pl| {
+    let packet_loss = rtt.map(|rtt| stats.estimate_packet_loss(rtt)).map( |pl| {
         Percent(pl.0 * 100.0)}).unwrap_or(Percent(100.0));
     let values = match opt_extended_format {
         true => vec![
@@ -476,7 +475,7 @@ fn output_row<'a> (opt_extended_format : bool, columnar : &Columnar,
 
 fn passive_update(opt_extended_format : bool, rtt : &Option<Ewma>,
                   columnar : &Columnar, stats : &Stats) {
-    output_row(opt_extended_format, columnar, stats, None, None, rtt.as_ref())
+    output_row(opt_extended_format, columnar, stats, None, &None, rtt.as_ref())
 }
 
 fn main() {
@@ -514,7 +513,7 @@ fn main() {
         Ok ((tx, rx)) => (tx, rx),
         Err (e) => panic!("Could not create the transport channel: {}", e)
     };
-    let dst = maybe_resolve(dest.expect("Need to supply a destination host")).
+    let dst = maybe_resolve(&dest.expect("Need to supply a destination host")).
         expect("Could not determine target address");
     let mut probe = send_ping(tx, dst);
     let mut seq = INITIAL_SEQ_NR;
@@ -544,7 +543,7 @@ fn main() {
     // the expiration of the send timer.
     let (sender, receiver) = mpsc::channel();
     let _ = thread::spawn(move || {
-        process_responses(rx, sender)});
+        process_responses(rx, &sender)});
     let start_time = Instant::now();
 
     println!("{}", columnar.header());
@@ -573,9 +572,9 @@ fn main() {
             let timeo = diff.to_duration();
             match receiver.recv_timeout(timeo) {
                 Ok (resp) => {
-                    for sample in do_response(&mut rtt_estimate, &mut stats, &resp) {
+                    if let Some(sample) = do_response(&mut rtt_estimate, &mut stats, &resp) {
                         output_row(opt_extended_format, &columnar, &stats,
-                                   Some (&resp), Some (sample), rtt_estimate.as_ref())
+                                   Some (&resp), &Some (sample), rtt_estimate.as_ref())
                     }
                 },
                 Err (RecvTimeoutError::Timeout) => {
