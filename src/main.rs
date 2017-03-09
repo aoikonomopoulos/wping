@@ -430,17 +430,47 @@ fn do_response(rtt_estimate : &mut Option<Ewma>,
     }
 }
 
-fn maybe_resolve(s : &str) -> Result<Ipv4Addr, String> {
+fn maybe_resolve(s : &str) -> Result<Vec<IpAddr>, String> {
     match Ipv4Addr::from_str(s) {
-        Ok (addr) => Ok (addr),
+        Ok (addr) => Ok (vec![IpAddr::V4 (addr)]),
         Err (_) => {
             let addrs = try!(resolve_host(&s).map_err(|e| String::from(e.description())));
-            addrs.filter_map(|a| match a {
-                IpAddr::V4 (v4) => Some (v4),
-                IpAddr::V6 (_) => None
-            }).next().ok_or_else(|| format!("No ipv4 addr for host '{}'", s))
+            Ok (addrs.collect())
         }
     }
+}
+
+fn select_destination_address(addrs : &[IpAddr]) -> Ipv4Addr {
+    addrs.iter().filter_map(|a| match *a {
+        IpAddr::V4 (v4) => Some (v4),
+        IpAddr::V6 (_) => None
+    }).next().unwrap_or_else(|| {
+        let msg = if addrs.is_empty() {
+            "no address for destination host"
+        } else {
+            "no IPv4 address for destination host"
+        };
+        writeln!(&mut std::io::stderr(),
+                 "Could not determine target address: {}", msg).unwrap();
+        std::process::exit(1)
+    })
+}
+
+fn print_resolved_addrs(dest : &str, selected : &Ipv4Addr, addrs: &[IpAddr]) {
+    let mut addrstrs = addrs.iter().map(|a| format!("{}", a)).peekable();
+    let mut acc = String::new();
+    loop {
+        match addrstrs.next() {
+            Some (s) => acc.push_str(&s),
+            None => break,
+        };
+        if addrstrs.peek().is_some() {
+            acc.push_str(" ")
+        }
+    }
+    writeln!(&mut std::io::stderr(),
+             "PING {} for {} ({})", selected, dest, acc).unwrap();
+
 }
 
 fn columns_simple () -> Vec<Column> {
@@ -578,10 +608,6 @@ fn main() {
         Ok ((tx, rx)) => (tx, rx),
         Err (e) => panic!("Could not create the transport channel: {}", e)
     };
-    let dst = maybe_resolve(&dest.expect("Need to supply a destination host")).
-        expect("Could not determine target address");
-    let mut probe = send_ping(tx, dst, send_size);
-    let mut seq = INITIAL_SEQ_NR;
     let interval = match opt_interval {
         None => 1000_000_000,
         Some (s) => (parse_cli_float(&s) * 1000_000_000.0) as u64
@@ -600,6 +626,27 @@ fn main() {
         },
         Some (sz) => parse_cli_int(&sz),
     };
+
+    let dest = dest.unwrap_or_else(|| {
+        writeln!(&mut std::io::stderr(),
+                 "Need to supply a destination host").unwrap();
+        std::process::exit(2)
+    });
+    let dst = match maybe_resolve(&dest) {
+        Err (e) => {
+            writeln!(&mut std::io::stderr(),
+                     "Name resolution error: {}", e).unwrap();
+            std::process::exit(1)
+        },
+        Ok (addrs) => {
+            let selected = select_destination_address(&addrs);
+            print_resolved_addrs(&dest, &selected, &addrs);
+            selected
+        },
+    };
+
+    let mut probe = send_ping(tx, dst, send_size);
+    let mut seq = INITIAL_SEQ_NR;
     let mut stats = Stats::new(window_size).expect("Couldn't create ring buffer");
     let mut rtt_estimate : Option<Ewma> = None;
 
