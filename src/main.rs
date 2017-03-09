@@ -2,6 +2,8 @@
 #![allow(match_bool)]
 
 extern crate argparse;
+extern crate byteorder;
+extern crate chrono;
 extern crate pnet;
 extern crate pnet_macros_support;
 extern crate libc;
@@ -32,7 +34,12 @@ use libc::getpid;
 use resolve::resolver::resolve_host;
 use std::error::Error;
 use std::fmt;
+use std::mem;
+use std::u8;
 use std::ops::Sub;
+use std::iter::Iterator;
+use byteorder::{BigEndian, WriteBytesExt};
+use chrono::offset::local::Local;
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 
@@ -114,6 +121,17 @@ fn icmp_update_seq(ipv4 : &mut MutableIpv4Packet, seq : u16) {
     echo_req.set_sequence_number(seq)
 }
 
+fn icmp_set_timestamp(ipv4 : &mut MutableIpv4Packet) {
+    let mut echo_req = MutableEchoRequestPacket::new(ipv4.payload_mut()).unwrap();
+    let time = Local::now();
+    let secs = time.timestamp();
+    let ns = time.timestamp_subsec_nanos().to_be();
+    // XXX: subtract start time
+    let secs = (secs as u32).to_be();
+    (&mut echo_req.payload_mut()[0..4]).write_u32::<BigEndian>(secs).unwrap();
+    (&mut echo_req.payload_mut()[4..8]).write_u32::<BigEndian>(ns).unwrap();
+}
+
 fn populate_packet(pkt_buf : &mut [u8], dst : &Ipv4Addr, icmp_payload : &[u8]) {
     let mut ipv4 = MutableIpv4Packet::new(pkt_buf).unwrap();
 
@@ -133,10 +151,17 @@ fn populate_packet(pkt_buf : &mut [u8], dst : &Ipv4Addr, icmp_payload : &[u8]) {
     icmp_populate_packet(&mut ipv4, icmp_payload);
 }
 
-fn send_ping (mut tx : TransportSender, dst : Ipv4Addr) -> Box<FnMut(u16) -> ()> {
+fn send_ping (mut tx : TransportSender, dst : Ipv4Addr, len : usize) -> Box<FnMut(u16) -> ()> {
 
-    let icmp_payload = vec![0x41; 60];
-
+    let timestamp_size = 2 * mem::size_of::<u32>();
+    let seq = (0u8..).take(u8::max_value() as usize).chain(Some(u8::max_value()));
+    // Send the same payload as iputils-ping
+    let icmp_payload : Vec<u8> = if len >= timestamp_size {
+        (vec![0u8; timestamp_size].into_iter()).chain(seq.cycle()).take(len).collect()
+    } else {
+        // Not enough space for a timestamp
+        seq.cycle().take(len).collect()
+    };
     let icmp_len = MutableEchoRequestPacket::minimum_packet_size() +
         icmp_payload.len();
     let total_len = MutableIpv4Packet::minimum_packet_size() + icmp_len;
@@ -147,6 +172,15 @@ fn send_ping (mut tx : TransportSender, dst : Ipv4Addr) -> Box<FnMut(u16) -> ()>
     Box::new(move |seq| {
         let mut ipv4 = MutableIpv4Packet::new(&mut pkt_buf).unwrap();
         icmp_update_seq(&mut ipv4, seq);
+        if len >= timestamp_size {
+            // This is totally unused, as we record the send time
+            // ourselves. It's only here so our packets look similar
+            // to iputils-ping. Perhaps we should replace it with a
+            // cookie to get rid of identifier conflicts (the PID is
+            // truncated to 16 bits, so we /could/ get confused with
+            // some other ping running on the same host).
+            icmp_set_timestamp(&mut ipv4)
+        }
         icmp_checksum(&mut ipv4);
 
         match tx.send_to(ipv4, IpAddr::V4(dst)) {
@@ -483,10 +517,13 @@ fn main() {
     let mut opt_interval : Option<String> = None;
     let mut opt_window_size : Option<String> = None;
     let mut opt_extended_format : bool = false;
+    let mut opt_send_size :Option<String> = None;
     {
         let mut parser = ArgumentParser::new();
         parser.refer(&mut dest).add_argument("address", StoreOption, "Target ipv4 address");
         parser.refer(&mut opt_interval).add_option(&["-i"], StoreOption, "Send interval");
+        parser.refer(&mut opt_send_size).add_option(&["-s", "--packet-size"], StoreOption,
+                                               "Packet size in bytes");
         parser.refer(&mut opt_window_size).
             add_option(&["--window"],StoreOption,
                        "Adaptive packet loss calculation for the last N probes");
@@ -508,6 +545,10 @@ fn main() {
     let columnar = columns.into_iter().
         fold(Columnar::new(), |columnar, col| columnar.push_col(col));
 
+    let send_size = match opt_send_size {
+        None => 56,
+        Some (s) => usize::from_str(&s).unwrap(),
+    };
     let protocol = Layer3(IpNextHeaderProtocols::Icmp);
     let (tx, rx) = match transport_channel(4096, protocol) {
         Ok ((tx, rx)) => (tx, rx),
@@ -515,7 +556,7 @@ fn main() {
     };
     let dst = maybe_resolve(&dest.expect("Need to supply a destination host")).
         expect("Could not determine target address");
-    let mut probe = send_ping(tx, dst);
+    let mut probe = send_ping(tx, dst, send_size);
     let mut seq = INITIAL_SEQ_NR;
     let interval = match opt_interval {
         None => 1000_000_000,
