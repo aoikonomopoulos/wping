@@ -35,6 +35,7 @@ use resolve::resolver::resolve_host;
 use std::error::Error;
 use std::fmt;
 use std::mem;
+use std::num::ParseIntError;
 use std::u8;
 use std::ops::Sub;
 use std::iter::Iterator;
@@ -512,6 +513,29 @@ fn passive_update(opt_extended_format : bool, rtt : &Option<Ewma>,
     output_row(opt_extended_format, columnar, stats, None, &None, rtt.as_ref())
 }
 
+fn parse_cli_int<T : FromStr<Err=ParseIntError>>(s : &str) -> T {
+    match T::from_str(s) {
+        Ok (x) => x,
+        Err (err) => {
+            writeln!(&mut std::io::stderr(),
+                     "Could not parse '{}' as an integer: {}", s, err).unwrap();
+            std::process::exit(2)
+        }
+    }
+}
+
+fn parse_cli_float(s : &str) -> f64 {
+    match f64::from_str(s) {
+        Ok (x) => x,
+        Err (err) => {
+            writeln!(&mut std::io::stderr(),
+                     "Could not parse '{}' as a floating point number: {}",
+                     s, err).unwrap();
+            std::process::exit(2)
+        }
+    }
+}
+
 fn main() {
     let mut dest : Option<String> = None;
     let mut opt_interval : Option<String> = None;
@@ -547,7 +571,7 @@ fn main() {
 
     let send_size = match opt_send_size {
         None => 56,
-        Some (s) => usize::from_str(&s).unwrap(),
+        Some (s) => parse_cli_int(&s),
     };
     let protocol = Layer3(IpNextHeaderProtocols::Icmp);
     let (tx, rx) = match transport_channel(4096, protocol) {
@@ -560,7 +584,7 @@ fn main() {
     let mut seq = INITIAL_SEQ_NR;
     let interval = match opt_interval {
         None => 1000_000_000,
-        Some (s) => (f64::from_str(&s).unwrap() * 1000_000_000.0) as u64
+        Some (s) => (parse_cli_float(&s) * 1000_000_000.0) as u64
     };
     let window_size = match opt_window_size {
         None => {
@@ -574,7 +598,7 @@ fn main() {
             // and drop the window logic).
             20 as u16
         },
-        Some (sz) => u16::from_str(&sz).expect("Window size must be in the range 1-32768"),
+        Some (sz) => parse_cli_int(&sz),
     };
     let mut stats = Stats::new(window_size).expect("Couldn't create ring buffer");
     let mut rtt_estimate : Option<Ewma> = None;
