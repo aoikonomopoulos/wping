@@ -39,37 +39,40 @@ $ sudo setcap cap_net_raw+ep ~/.cargo/bin/wping
 ```
 
 ## Usage
-On a loopback interface with emulated packet loss:
+On an interface with emulated packet loss:
 
 ```
-$ wping 127.0.0.1
+$ wping en.wikipedia.org
+PING 91.198.174.192 for en.wikipedia.org (91.198.174.192)
  Seq      RTT      smooth RTT   RTT variation   Packet loss
-  1     315 us       315 us        157 us           0%
-  -        -         315 us        157 us           12%
-  3     335 us       318 us        123 us           11%
-  4     346 us       321 us         99 us           10%
-  5     339 us       323 us         79 us           8%
-  6     131 us       299 us        107 us           7%
-  7     128 us       278 us        123 us           6%
-  8     322 us       283 us        103 us           6%
-  -        -         283 us        103 us           17%
- 10     134 us       265 us        115 us           15%
- 11     332 us       273 us        103 us           13%
-  -        -         273 us        103 us           24%
- 13     138 us       256 us        111 us           21%
- 14     315 us       264 us         98 us           18%
-  -        -         264 us         98 us           29%
- 16     139 us       248 us        104 us           25%
- 17     324 us       258 us         97 us           22%
- 18     126 us       241 us        106 us           19%
- 19     124 us       226 us        108 us           17%
- 20     309 us       237 us        102 us           15%
- 21     318 us       247 us         96 us           13%
+  1      96 ms       96 ms          48 ms           0%
+  2      95 ms       96 ms          36 ms           0%
+  3     108 ms       97 ms          30 ms           0%
+  4     100 ms       98 ms          23 ms           0%
+  -        -         98 ms          23 ms           12%
+  6      97 ms       97 ms          17 ms           11%
+  7      95 ms       97 ms          14 ms           10%
+  8      95 ms       97 ms          10 ms           8%
+  9      96 ms       97 ms          8 ms            7%
+ 10      97 ms       97 ms          6 ms            6%
+ 11      98 ms       97 ms          5 ms            6%
+ 12      97 ms       97 ms          3 ms            5%
+  -        -         97 ms          3 ms            17%
+ 14      96 ms       97 ms          3 ms            15%
+ 15     108 ms       98 ms          5 ms            13%
+ 16      97 ms       98 ms          4 ms            11%
+ 17      97 ms       98 ms          3 ms            10%
+  -        -         98 ms          3 ms            21%
+ 19      96 ms       98 ms          3 ms            18%
+ 20     111 ms       99 ms          5 ms            16%
+ 21      96 ms       99 ms          5 ms            14%
 ```
 
 The default send interval is 1s and the adaptive packet loss window
 includes 20 probes (the effects of a packet loss event drop to below
-1% after that).
+1% after that). At startup, `wping` prints out all IP addresses
+retrieved for the target domain as a gentle reminder that round-robin
+DNS might be at play.
 
 ```
 Usage:
@@ -77,11 +80,13 @@ Usage:
 
 
 positional arguments:
-  address               Target ipv4 address
+  address               Target hostname or IPv4 address
 
 optional arguments:
   -h,--help             show this help message and exit
   -i                    Send interval
+  -s,--packet-size PACKET_SIZE
+                        Payload size in bytes
   --window WINDOW       Adaptive packet loss calculation for the last N probes
   -x,--extended         Include additional information in the output
 ```
