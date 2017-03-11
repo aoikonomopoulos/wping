@@ -574,10 +574,11 @@ fn main() {
     let mut opt_send_size :Option<String> = None;
     {
         let mut parser = ArgumentParser::new();
-        parser.refer(&mut dest).add_argument("address", StoreOption, "Target ipv4 address");
+        parser.refer(&mut dest).add_argument("address", StoreOption,
+                                             "Target hostname or IPv4 address");
         parser.refer(&mut opt_interval).add_option(&["-i"], StoreOption, "Send interval");
         parser.refer(&mut opt_send_size).add_option(&["-s", "--packet-size"], StoreOption,
-                                               "Packet size in bytes");
+                                               "Payload size in bytes");
         parser.refer(&mut opt_window_size).
             add_option(&["--window"],StoreOption,
                        "Adaptive packet loss calculation for the last N probes");
