@@ -1,6 +1,6 @@
 [package]
 name = "wping"
-version = "0.2.0"
+version = "0.3.0"
 description = "A ping command that tries to provide more useful output"
 authors = ["Angelos Oikonomopoulos <a.oikonomopoulos@vu.nl>"]
 license = "GPL-3.0"
