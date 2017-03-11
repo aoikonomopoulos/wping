@@ -27,11 +27,22 @@ The EWMA calculation is performed according to RFC6298.
 Updated statistics are printed once per send interval: when a response
 is received or, failing that, when the next probe is about to be sent.
 
+## Installation
+
+Currently, the way to install `wping` is via cargo. If cargo is not
+avaliable as a distribution package, the easiest way to get it is by
+installing [rustup](https://www.rustup.rs) and then:
+
+```
+$ cargo install wping
+$ sudo setcap cap_net_raw+ep ~/.cargo/bin/wping
+```
+
 ## Usage
 On a loopback interface with emulated packet loss:
 
 ```
-$ sudo wping 127.0.0.1
+$ wping 127.0.0.1
  Seq      RTT      smooth RTT   RTT variation   Packet loss
   1     315 us       315 us        157 us           0%
   -        -         315 us        157 us           12%
@@ -58,12 +69,7 @@ $ sudo wping 127.0.0.1
 
 The default send interval is 1s and the adaptive packet loss window
 includes 20 probes (the effects of a packet loss event drop to below
-1% after that). On Linux, you can avoid the need for sudo by setting
-the appropriate capability on the executable:
-
-```
-# setcap cap_net_raw+ep /path/to/wping
-```
+1% after that).
 
 ```
 Usage:
