@@ -90,3 +90,6 @@ optional arguments:
   --window WINDOW       Adaptive packet loss calculation for the last N probes
   -x,--extended         Include additional information in the output
 ```
+## Current limitations
+- Does not notice/handle other ICMP packet types (e.g. ICMP_REDIRECT)
+- No IPv6
